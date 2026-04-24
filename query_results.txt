@@ -1,0 +1,77 @@
+# DNS Query Results for ultratest.huque.com
+# Format: Query | Status | NSEC Owner (predecessor) | NSEC Next (successor) | Notes
+# All names shown as labels relative to ultratest.huque.com unless otherwise noted
+
+## NODATA Responses (name exists, type doesn't)
+
+address1 AAAA | NODATA | address1 | address1! | A RRSIG NSEC
+address2 A    | NODATA | address2 | address2! | AAAA RRSIG NSEC
+jaguar AAAA   | NODATA | jaguar   | jaguar!   | A RRSIG NSEC
+yak AAAA      | NODATA | yak      | yak!      | A RRSIG NSEC
+_ A           | NODATA | _        | _!        | TXT RRSIG NSEC
+apex AAAA     | NODATA | ultratest.huque.com | !.ultratest.huque.com | A NS SOA RRSIG NSEC DNSKEY CAA
+ent A         | NODATA | ent      | \000.ent   | RRSIG NSEC (ENT - empty non-terminal)
+
+## NXDOMAIN Responses (name doesn't exist)
+## Each has two NSECs: one covering the qname, one covering the wildcard
+
+### NSEC covering the queried name:
+# Query        | Predecessor (NSEC owner)  | Successor (NSEC next)
+
+koala          | ~.koal_~     | koala!
+apple          | ~.appld~     | apple!
+zebra          | ~.zebr_~     | zebra!
+abc            | ~.abb~       | abc!
+m              | ~.l~         | m!
+zzz            | ~.zzy~       | zzz!
+ba             | ~.b_~        | ba!
+bA             | ~.b_~        | ba!         (DNS case-insensitive, same as ba)
+b0             | ~.b-~        | b0!
+b-             | ~.b!~        | b-!
+b_             | ~.b9~        | b_!
+b!             | ~.b          | b!!
+c!             | ~.c          | c!!
+b~             | ~.bz~        | b~!
+b{             | ~.bz~        | b{!
+b"             | ~.b!~        | b"!
+b#             | ~.b!~        | b#!
+b*             | ~.b!~        | b*!
+b+             | ~.b!~        | b+!
+b,             | ~.b!~        | b,!
+b/             | ~.b-~        | b/!
+b`             | ~.b_~        | b`!
+b:             | ~.b9~        | b:!
+b;             | ~.b9~        | b;!
+b@             | ~.b9~        | b@!
+b^             | ~.b9~        | b^!
+b|             | ~.bz~        | b|!
+b}             | ~.bz~        | b}!
+b1             | ~.b0~        | b1!
+b9             | ~.b8~        | b9!
+bz             | ~.by~        | bz!
+abcdef         | ~.abcdee~    | abcdef!
+abcdefghij     | ~.abcdefghii~ | abcdefghij!
+cat            | ~.cas~       | cat!
+a              | ~._~         | a!
+address0       | ~.address-~  | address0!
+address1a      | ~.address1_~ | address1a!
+zzzzz          | ~.zzzzy~     | zzzzz!
+!a             | !_~          | !a!         (predecessor uses _ not ~.!)
+a.b            | _~.b         | a!.b        (multi-level: operates on first label relative to closest encloser b)
+
+### Wildcard coverage NSEC (always the same for direct children of zone):
+# !~.ultratest.huque.com. NSEC -.ultratest.huque.com. RRSIG NSEC
+
+### Special: querying "!" itself
+# Predecessor is max-length name filled with \255 bytes (absolute minimum of namespace)
+# Successor: !!
+
+### Special: nonexist.wild (under wildcard)
+# Got wildcard-synthesized answer with NSEC proving no closer match:
+# ~.nonexiss~.wild NSEC nonexist!.wild (same pattern applied within wild subdomain)
+
+### Special: camel (zone apex wildcard, temporary)
+# Temporary *.ultratest.huque.com wildcard added to test apex behavior
+# Got wildcard-synthesized answer with NSEC proving no closer match:
+# ~.camek~.ultratest.huque.com. NSEC camel!.ultratest.huque.com.
+# Same algorithm as subdomain wildcard - no special-casing at apex

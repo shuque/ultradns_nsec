@@ -127,10 +127,97 @@ canonical order, creating the tightest possible NSEC bracket.
 
 ### Depth of predecessor
 
-The predecessor always uses exactly ONE child label `~` prepended, and
-exactly ONE `~` appended to the decremented name. The predecessor is not
-padded to maximum DNS name length (except for the edge case of querying `!`
-itself, which produced a max-length 0xFF-filled name).
+The predecessor typically uses one child label `~` prepended, but
+sometimes uses **two** (i.e., `~.~.pred~` instead of `~.pred~`). This
+behavior is deterministic and correlates with the queried name falling in
+certain "gaps" between existing zone names.
+
+For example, in single-character queries against `ultratest.huque.com`:
+- Queries `f` through `j` produce depth-2 predecessors (these fall between
+  existing names `ent` and `jaguar`)
+- Queries `x` and `y` produce depth-2 predecessors (these fall between
+  existing names `wild` and `yak`)
+- All other queries produce depth-1 predecessors
+
+The extra depth is not strictly required for correctness — a single `~`
+child label would produce a canonically valid predecessor in all observed
+cases. This may be a conservative implementation detail in UltraDNS's
+online signer, possibly related to how it indexes the zone data internally.
+
+The predecessor is not padded to maximum DNS name length (except for the
+edge case of querying `!` itself, which produced a max-length 0xFF-filled
+name).
+
+## Variable-Depth Predecessor: Open Question
+
+The predecessor function sometimes uses two `~` child labels instead of
+one. The base label computation is identical (decrement last character,
+append `~`), but an additional `~` child label is prepended. For example:
+
+- `koala` → `~.koal_~` (depth-1, the typical case)
+- `f` → `~.~.e~` (depth-2, instead of the expected `~.e~`)
+
+This was verified directly against all six authoritative servers
+(dns01-06.salesforce.com) — it is not a resolver caching artifact.
+
+### Observed pattern
+
+Testing all single-character queries a-z, depth-2 appears for:
+
+| Query | Depth-2 predecessor | Gap between existing names |
+|---|---|---|
+| f, g, h, i, j | `~.~.e~` through `~.~.i~` | between `ent` and `jaguar` |
+| x, y | `~.~.w~` and `~.~.x~` | between `wild` and `yak` |
+
+All other single-character queries produce depth-1 predecessors.
+
+Further testing confirmed:
+- ALL two-character names starting with `f` (fa through fz) produce depth-2
+- ALL two-character names starting with `k` (ka through kz) produce depth-1
+- The exact boundary within the `e` prefix is between `en` (depth-1,
+  predecessor `~.em~`) and `eo` (depth-2, predecessor `~.~.en~`). This is
+  precisely where the predecessor label `en~` crosses past the existing
+  name `ent` in canonical order.
+
+### Why the extra depth is not required
+
+In every observed case, the depth-1 predecessor would produce a
+canonically valid NSEC. No existing zone names fall within the range
+`[~.pred~, qname!)` that would be incorrectly denied. The depth-2
+predecessor simply produces a tighter bracket by sorting slightly closer
+to the query name:
+
+```
+(canonical order)
+  ~.e~  <  ~.~.e~  <  f  <  f!
+```
+
+Both `[~.e~, f!)` and `[~.~.e~, f!)` are valid NSEC ranges — neither
+contains any existing zone name.
+
+### Possible explanations
+
+The reason for the extra depth is unclear. Some possibilities:
+
+1. **Conservative prefix check**: The server may check whether any existing
+   zone name shares a prefix with the predecessor label. For example, the
+   predecessor label `en~` shares the prefix `en` with existing name `ent`,
+   triggering an extra level of depth as a safety margin. This would explain
+   the `en`/`eo` boundary but doesn't perfectly explain all the single-char
+   cases (e.g., `f` has predecessor label `e~`, and `ent` starts with `e`).
+
+2. **Tree-based data structure**: The online signer may use a tree (e.g.,
+   a trie or red-black tree) to index zone names. Traversing certain gaps
+   in the tree may naturally produce an extra label level depending on the
+   tree's internal structure.
+
+3. **Proximity heuristic**: The server may add depth when the predecessor
+   falls "near" an existing name in canonical order, even if the simple
+   predecessor would be technically correct, as extra insurance.
+
+This remains an open question. The behavior does not affect the correctness
+or security of the NSEC responses — it only produces slightly tighter
+brackets in certain cases.
 
 ## Wildcard Coverage NSEC
 
@@ -250,6 +337,15 @@ covers the queried name (proves it doesn't exist).
 | zzzzz | `\~.zzzzy\~` | zzzzz! | |
 | !a | `!_\~` | !a! | pred uses \_ (prev of a), no child label prepended |
 | a.b | `_\~.b` | a!.b | multi-level: algorithm applied to first label under closest encloser b |
+| f | `\~.\~.e\~` | f! | depth=2 predecessor (between ent and jaguar) |
+| g | `\~.\~.f\~` | g! | depth=2 |
+| h | `\~.\~.g\~` | h! | depth=2 |
+| i | `\~.\~.h\~` | i! | depth=2 |
+| j | `\~.\~.i\~` | j! | depth=2 |
+| x | `\~.\~.w\~` | x! | depth=2 (between wild and yak) |
+| y | `\~.\~.x\~` | y! | depth=2 |
+| en | `\~.em\~` | en! | depth=1, just before boundary |
+| eo | `\~.\~.en\~` | eo! | depth=2, at boundary |
 
 ### NXDOMAIN Responses — Wildcard Coverage NSEC
 

@@ -134,25 +134,6 @@ under `b`) sorts just before `b!` (a sibling `b!`).
 The result is a name that sorts immediately before the queried name in
 canonical order, creating the tightest possible NSEC bracket.
 
-### Depth of predecessor
-
-The predecessor typically uses one child label `~` prepended, but
-sometimes uses **two** (i.e., `~.~.pred~` instead of `~.pred~`). This
-behavior is deterministic and correlates with the queried name falling in
-certain "gaps" between existing zone names.
-
-For example, in single-character queries against `ultratest.huque.com`:
-- Queries `f` through `j` produce depth-2 predecessors (these fall between
-  existing names `ent` and `jaguar`)
-- Queries `x` and `y` produce depth-2 predecessors (these fall between
-  existing names `wild` and `yak`)
-- All other queries produce depth-1 predecessors
-
-The extra depth is not strictly required for correctness — a single `~`
-child label would produce a canonically valid predecessor in all observed
-cases. This may be a conservative implementation detail in UltraDNS's
-online signer, possibly related to how it indexes the zone data internally.
-
 The predecessor is not padded to maximum DNS name length (except for the
 edge case of querying `!` itself, which produced a max-length 0xFF-filled
 name).

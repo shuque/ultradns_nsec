@@ -59,6 +59,27 @@ zzzzz          | ~.zzzzy~     | zzzzz!
 !a             | !_~          | !a!         (predecessor uses _ not ~.!)
 a.b            | _~.b         | a!.b        (multi-level: operates on first label relative to closest encloser b)
 
+### Variable-depth predecessor (depth=2 child labels)
+# Some queries produce ~.~.pred~ instead of ~.pred~. Tested directly against
+# authoritative servers (dns01-06.salesforce.com) — not a caching artifact.
+# Correlates with query name falling in gaps between existing zone names.
+
+# Single-char queries with depth=2 predecessors (direct-to-auth, verified):
+f              | ~.~.e~       | f!          (depth=2, between ent and jaguar)
+g              | ~.~.f~       | g!          (depth=2)
+h              | ~.~.g~       | h!          (depth=2)
+i              | ~.~.h~       | i!          (depth=2)
+j              | ~.~.i~       | j!          (depth=2)
+x              | ~.~.w~       | x!          (depth=2, between wild and yak)
+y              | ~.~.x~       | y!          (depth=2)
+
+# All fa-fz queries produce depth=2 (verified direct-to-auth)
+# All ka-kz queries produce depth=1 (verified direct-to-auth)
+
+# Two-char 'eo' is the exact boundary for 'e' prefix:
+en             | ~.em~        | en!         (depth=1, just before boundary)
+eo             | ~.~.en~      | eo!         (depth=2, at boundary — 'en' is prefix of existing 'ent')
+
 ### Wildcard coverage NSEC (always the same for direct children of zone):
 # !~.ultratest.huque.com. NSEC -.ultratest.huque.com. RRSIG NSEC
 
@@ -75,3 +96,47 @@ a.b            | _~.b         | a!.b        (multi-level: operates on first labe
 # Got wildcard-synthesized answer with NSEC proving no closer match:
 # ~.camek~.ultratest.huque.com. NSEC camel!.ultratest.huque.com.
 # Same algorithm as subdomain wildcard - no special-casing at apex
+
+# ============================================================================
+# DNS Query Results for ultratest2.huque.com
+# Zone has apex wildcard (*.ultratest2.huque.com)
+# Zone structure:
+#   aa (leaf), corp (TXT) -> finance.corp (TXT) -> foo.finance.corp (A),
+#   dd (leaf), ent (ENT) -> kk.ent (A), gg, jj, mm, pp, ss, vv, yy (leaves)
+# ============================================================================
+
+## Wildcard-Synthesized Responses (apex level)
+# All queries at zone apex match the wildcard, so responses are NOERROR with answer.
+# NSEC in authority proves no closer match than the wildcard.
+
+# Query        | Predecessor (NSEC owner)       | Successor (NSEC next) | Depth | Preceding name (subtree height)
+a              | ~._~                           | a!                    | 1     | * (leaf, h=1)
+ab             | ~.aa~                          | ab!                   | 1     | aa (leaf, h=1)
+bb             | ~.ba~                          | bb!                   | 1     | aa (leaf, h=1)
+da             | ~.~.~.d_~                      | da!                   | 3     | corp (->finance->foo, h=3)
+ee             | ~.ed~                          | ee!                   | 1     | dd (leaf, h=1)
+ff             | ~.~.fe~                        | ff!                   | 2     | ent (->kk, h=2)
+hh             | ~.hg~                          | hh!                   | 1     | gg (leaf, h=1)
+ww             | ~.wv~                          | ww!                   | 1     | vv (leaf, h=1)
+zz             | ~.zy~                          | zz!                   | 1     | yy (leaf, h=1)
+
+## NXDOMAIN Responses (subdomain level)
+# Under subdomains without wildcards, queries produce NXDOMAIN.
+# Each has two NSECs: name coverage + wildcard coverage.
+
+### Name coverage NSEC:
+# Query                | Predecessor (NSEC owner)       | Successor (NSEC next)  | Depth | Preceding name (subtree height)
+ab.corp                | aa~.corp                       | ab!.corp               | 0     | (none, h=0)
+ga.corp                | ~.~.g_~.corp                   | ga!.corp               | 2     | finance (->foo, h=2)
+ab.ent                 | aa~.ent                        | ab!.ent                | 0     | (none, h=0)
+zz.ent                 | ~.zy~.ent                      | zz!.ent                | 1     | kk (leaf, h=1)
+ab.finance.corp        | aa~.finance.corp               | ab!.finance.corp       | 0     | (none, h=0)
+zz.finance.corp        | ~.zy~.finance.corp             | zz!.finance.corp       | 1     | foo (leaf, h=1)
+
+### Wildcard coverage NSEC (under each subdomain):
+# ab.corp:          !~.corp.ultratest2.huque.com.          NSEC -.corp.ultratest2.huque.com.
+# ga.corp:          !~.corp.ultratest2.huque.com.          NSEC -.corp.ultratest2.huque.com.
+# ab.ent:           !~.ent.ultratest2.huque.com.           NSEC -.ent.ultratest2.huque.com.
+# zz.ent:           !~.ent.ultratest2.huque.com.           NSEC -.ent.ultratest2.huque.com.
+# ab.finance.corp:  !~.finance.corp.ultratest2.huque.com.  NSEC -.finance.corp.ultratest2.huque.com.
+# zz.finance.corp:  !~.finance.corp.ultratest2.huque.com.  NSEC -.finance.corp.ultratest2.huque.com.

@@ -157,76 +157,148 @@ The predecessor is not padded to maximum DNS name length (except for the
 edge case of querying `!` itself, which produced a max-length 0xFF-filled
 name).
 
-## Variable-Depth Predecessor: Open Question
+## Variable-Depth Predecessor
 
-The predecessor function sometimes uses two `~` child labels instead of
-one. The base label computation is identical (decrement last character,
-append `~`), but an additional `~` child label is prepended. For example:
+The number of `~` child labels prepended to the predecessor base label
+is not fixed — it varies depending on the zone content. The base label
+computation is always the same (decrement last character, append `~`),
+but the number of `~` child labels prepended equals the **subtree height
+of the nearest preceding existing zone name** in DNS canonical order.
 
-- `koala` → `~.koal_~` (depth-1, the typical case)
-- `f` → `~.~.e~` (depth-2, instead of the expected `~.e~`)
+### Rule
 
-This was verified directly against all six authoritative servers
-(dns01-06.salesforce.com) — it is not a resolver caching artifact.
+Given a query name Q within some parent domain:
 
-### Observed pattern
+1. Find the nearest existing zone name P that precedes Q in DNS
+   canonical order (at the same level within the parent).
+2. Compute the subtree height of P: the length of the longest
+   descendant chain rooted at P within the zone.
+   - Leaf node (no children): height = 1
+   - Node with children but no grandchildren: height = 2
+   - Node with grandchildren: height = 3, etc.
+3. Prepend that many `~` child labels to the predecessor base label.
+4. If no preceding name exists (Q sorts before all names at this level),
+   use height = 0 (no `~` child labels).
 
-Testing all single-character queries a-z, depth-2 appears for:
+### Verification with ultratest2.huque.com
 
-| Query | Depth-2 predecessor | Gap between existing names |
-|---|---|---|
-| f, g, h, i, j | `~.~.e~` through `~.~.i~` | between `ent` and `jaguar` |
-| x, y | `~.~.w~` and `~.~.x~` | between `wild` and `yak` |
+The zone `ultratest2.huque.com` was constructed specifically to test this
+theory, with names at various subtree depths:
 
-All other single-character queries produce depth-1 predecessors.
+**Zone structure (apex level):**
+- `*` (wildcard, leaf)
+- `aa` (leaf)
+- `corp` (TXT) → `finance.corp` (TXT) → `foo.finance.corp` (A) — height 3
+- `dd` (leaf)
+- `ent` (ENT) → `kk.ent` (A) — height 2
+- `gg`, `jj`, `mm`, `pp`, `ss`, `vv`, `yy` (all leaves)
 
-Further testing confirmed:
-- ALL two-character names starting with `f` (fa through fz) produce depth-2
-- ALL two-character names starting with `k` (ka through kz) produce depth-1
-- The exact boundary within the `e` prefix is between `en` (depth-1,
-  predecessor `~.em~`) and `eo` (depth-2, predecessor `~.~.en~`). This is
-  precisely where the predecessor label `en~` crosses past the existing
-  name `ent` in canonical order.
+**Apex-level queries (wildcard-synthesized responses):**
 
-### Why the extra depth is not required
+| Query | Preceding name | Subtree height | Depth | Predecessor |
+|---|---|---|---|---|
+| `a` | `*` (leaf) | 1 | 1 | `\~.\_\~` |
+| `ab` | `aa` (leaf) | 1 | 1 | `\~.aa\~` |
+| `bb` | `aa` (leaf) | 1 | 1 | `\~.ba\~` |
+| `da` | `corp` (→finance→foo) | 3 | 3 | `\~.\~.\~.d\_\~` |
+| `ee` | `dd` (leaf) | 1 | 1 | `\~.ed\~` |
+| `ff` | `ent` (→kk) | 2 | 2 | `\~.\~.fe\~` |
+| `hh` | `gg` (leaf) | 1 | 1 | `\~.hg\~` |
+| `ww` | `vv` (leaf) | 1 | 1 | `\~.wv\~` |
+| `zz` | `yy` (leaf) | 1 | 1 | `\~.zy\~` |
 
-In every observed case, the depth-1 predecessor would produce a
-canonically valid NSEC. No existing zone names fall within the range
-`[~.pred~, qname!)` that would be incorrectly denied. The depth-2
-predecessor simply produces a tighter bracket by sorting slightly closer
-to the query name:
+**Subdomain-level queries (NXDOMAIN responses):**
+
+| Query | Preceding name | Subtree height | Depth | Predecessor |
+|---|---|---|---|---|
+| `ab.corp` | (none) | 0 | 0 | `aa\~.corp` |
+| `ga.corp` | `finance` (→foo) | 2 | 2 | `\~.\~.g\_\~.corp` |
+| `ab.ent` | (none) | 0 | 0 | `aa\~.ent` |
+| `zz.ent` | `kk` (leaf) | 1 | 1 | `\~.zy\~.ent` |
+| `ab.finance.corp` | (none) | 0 | 0 | `aa\~.finance.corp` |
+| `zz.finance.corp` | `foo` (leaf) | 1 | 1 | `\~.zy\~.finance.corp` |
+
+### Verification with ultratest.huque.com
+
+The original test zone confirms the same pattern:
+
+**Zone structure (apex level):**
+- `*` is not present at the apex (only under `wild`)
+- `_`, `_foo` (leaves)
+- `address1`, `address2` (leaves)
+- `ent` (ENT) → `foo.ent` (A) — height 2
+- `jaguar`, `panthro` (leaves)
+- `wild` → `*.wild`, `bar.wild`, `explicit.wild` — height 2
+- `yak` (leaf)
+
+| Query | Preceding name | Subtree height | Depth | Notes |
+|---|---|---|---|---|
+| f–j | `ent` (→foo.ent) | 2 | 2 | between `ent` and `jaguar` |
+| x–y | `wild` (→\*.wild, etc.) | 2 | 2 | between `wild` and `yak` |
+| koala, m, etc. | various leaves | 1 | 1 | typical case |
+| !a | (none before `*`) | 0 | 0 | sorts before all zone names |
+| a.b | (none under `b`) | 0 | 0 | no children exist under `b` |
+
+The boundary test from the original zone also confirms: `en` (depth-1,
+predecessor `\~.em\~`) vs `eo` (depth-2, predecessor `\~.\~.en\~`). The
+predecessor label for `en` is `em\~`, which sorts before `ent` in
+canonical order — so the depth still reflects the leaf-like predecessor
+`address2` or is within a safe range. For `eo`, the predecessor label
+`en\~` would sort after `ent` (since `ent` < `en\~`), so the algorithm
+accounts for `ent`'s subtree and uses depth-2.
+
+### Why extra depth is not strictly required
+
+In every observed case, a depth-1 (or even depth-0) predecessor would
+produce a canonically valid NSEC. No existing zone names fall within the
+tighter range. The extra depth produces a slightly narrower bracket:
 
 ```
 (canonical order)
   ~.e~  <  ~.~.e~  <  f  <  f!
 ```
 
-Both `[~.e~, f!)` and `[~.~.e~, f!)` are valid NSEC ranges — neither
-contains any existing zone name.
+Both `[\~.e\~, f!)` and `[\~.\~.e\~, f!)` are valid — neither contains
+any existing zone name.
 
-### Possible explanations
+### Rationale for Variable Depth (Speculative)
 
-The reason for the extra depth is unclear. Some possibilities:
+The extra depth is never required for correctness. A depth-0 predecessor
+(just the base label, no `\~` child labels) always sorts after the
+preceding name P and all of P's descendants in canonical order. This is
+because the base label is lexicographically greater than P's label (since
+the query Q > P, and the decrement only touches the last character). In
+canonical ordering, the first-from-zone label comparison already decides
+`base\_label > P\_label`, so all descendants of P (whose first-from-zone
+label is `P\_label`) sort before even a depth-0 predecessor.
 
-1. **Conservative prefix check**: The server may check whether any existing
-   zone name shares a prefix with the predecessor label. For example, the
-   predecessor label `en~` shares the prefix `en` with existing name `ent`,
-   triggering an extra level of depth as a safety margin. This would explain
-   the `en`/`eo` boundary but doesn't perfectly explain all the single-char
-   cases (e.g., `f` has predecessor label `e~`, and `ent` starts with `e`).
+The most compelling explanation is that the depth is a **natural emergent
+property of a tree traversal**. When the online signer computes the
+canonical predecessor of Q, it likely:
 
-2. **Tree-based data structure**: The online signer may use a tree (e.g.,
-   a trie or red-black tree) to index zone names. Traversing certain gaps
-   in the tree may naturally produce an extra label level depending on the
-   tree's internal structure.
+1. Walks an internal data structure (e.g., a red-black tree or trie)
+   that indexes zone names in canonical order.
+2. Finds the "previous entry" by descending to the **rightmost leaf**
+   under the preceding sibling node.
+3. That rightmost leaf sits at a depth equal to the subtree height.
+4. The `\~` child labels are generated as the traversal ascends back up
+   from that leaf — one per level.
 
-3. **Proximity heuristic**: The server may add depth when the predecessor
-   falls "near" an existing name in canonical order, even if the simple
-   predecessor would be technically correct, as extra insurance.
+In this model, the algorithm is not explicitly computing "subtree height
+of the preceding name." It is simply performing a standard "find the
+previous entry in a sorted tree" operation, and the depth is how deep
+that traversal naturally goes. The `\~` labels (the maximum character in
+the alphabet) at each level ensure the synthetic name sorts after every
+real descendant at that level, mimicking a "go right as far as possible
+at each level" tree walk.
 
-This remains an open question. The behavior does not affect the correctness
-or security of the NSEC responses — it only produces slightly tighter
-brackets in certain cases.
+There is one theoretical scenario where extra depth could matter: if zone
+names contained label bytes > 0x7E (the octet value of `\~`), then a
+single `\~` child label would not be the maximum at that level, and a
+real descendant could sort after it. Going deeper provides a wider safety
+margin. However, UltraDNS almost certainly restricts zone names to their
+defined 40-character alphabet (where `\~` is the maximum), making this a
+theoretical rather than practical concern.
 
 ## Wildcard Coverage NSEC
 

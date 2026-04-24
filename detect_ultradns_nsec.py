@@ -76,12 +76,20 @@ def random_label(length=8):
     return ''.join(random.choice(chars) for _ in range(length))
 
 
+def check_apex_wildcard(zone_name):
+    """Check if the zone has an apex wildcard by querying a random name."""
+    test_name = dns.name.from_text(f"{random_label(12)}.{zone_name}")
+    response = query_dns(test_name, "A")
+    rcode = response.rcode()
+    if rcode == dns.rcode.NOERROR and len(response.answer) > 0:
+        return True
+    return False
+
+
 def find_nxdomain_parent(zone_name):
     """
     Find a parent name under which we can elicit NXDOMAIN responses.
-    Returns the zone name itself if direct children produce NXDOMAIN.
-    If the zone has an apex wildcard, try to find an existing non-wildcard
-    child and return it as the parent for deeper queries.
+    Returns (parent_name, method) or (None, reason).
     """
     test_label = random_label(12)
     test_name = dns.name.from_text(f"{test_label}.{zone_name}")
@@ -92,40 +100,7 @@ def find_nxdomain_parent(zone_name):
         return zone_name, "direct"
 
     if rcode == dns.rcode.NOERROR and len(response.answer) > 0:
-        print(f"  Zone appears to have an apex wildcard (got answer for random name)")
-        print(f"  Attempting to find an existing non-wildcard child to query under...")
-
-        response = query_dns(zone_name, "SOA", want_dnssec=True)
-        nsec_records = get_nsec_records(response)
-
-        existing_children = set()
-        for rrset in nsec_records:
-            owner = rrset.name
-            if owner != zone_name and owner.is_subdomain(zone_name):
-                existing_children.add(owner)
-            for rdata in rrset:
-                nxt = rdata.next
-                if nxt != zone_name and nxt.is_subdomain(zone_name):
-                    existing_children.add(nxt)
-
-        common_names = ["www", "mail", "ns1", "ns2", "ftp", "smtp", "pop", "imap",
-                        "dns", "api", "app", "web", "test", "dev", "staging"]
-        for name in common_names:
-            candidate = dns.name.from_text(f"{name}.{zone_name}")
-            resp = query_dns(candidate, "A")
-            if resp.rcode() == dns.rcode.NOERROR:
-                nsecs = get_nsec_records(resp)
-                if not nsecs:
-                    existing_children.add(candidate)
-
-        for child in existing_children:
-            test = dns.name.from_text(f"{random_label(12)}.{child}")
-            resp = query_dns(test, "A")
-            if resp.rcode() == dns.rcode.NXDOMAIN:
-                print(f"  Found NXDOMAIN-capable parent: {child}")
-                return child, "under_child"
-
-        return None, "wildcard_no_parent_found"
+        return None, "apex_wildcard"
 
     return None, f"unexpected_rcode_{dns.rcode.to_text(rcode)}"
 
@@ -158,10 +133,60 @@ def expected_successor_label(qname_label):
     return qname_label.lower() + "!"
 
 
-def check_nxdomain_nsec(zone_name, parent_name, verbose=False):
+def match_nsec_pattern(test_label, parent_name, nsec_records, verbose, details):
+    """
+    Check if NSEC records match UltraDNS patterns for a given query label.
+    Returns a score: 1.0 for full match, 0.5 for successor-only, 0 for no match.
+    """
+    name_covering = None
+
+    for rrset in nsec_records:
+        for rdata in rrset:
+            next_name = rdata.next
+            next_labels = next_name.relativize(parent_name)
+            next_first_label = next_labels[0].decode().lower()
+            if next_first_label == expected_successor_label(test_label):
+                name_covering = (rrset.name, next_name)
+
+    if not name_covering:
+        if verbose:
+            details.append(f"  {test_label}: could not identify name-covering NSEC")
+        return 0
+
+    owner, nxt = name_covering
+    owner_rel = owner.relativize(parent_name)
+    exp_base = expected_predecessor_label(test_label)
+    owner_labels = [l.decode().lower() for l in owner_rel.labels]
+
+    pred_match = False
+    if len(owner_labels) >= 1:
+        base_label = owner_labels[-1]
+        tilde_labels = owner_labels[:-1]
+        if base_label == exp_base and all(l == "~" for l in tilde_labels):
+            pred_match = True
+
+    succ_str = nxt.relativize(parent_name)[0].decode().lower()
+    succ_match = succ_str == expected_successor_label(test_label)
+
+    if verbose:
+        depth = len(owner_labels) - 1 if pred_match else "?"
+        details.append(f"  {test_label}: NSEC owner={owner} next={nxt}")
+        details.append(f"    successor match: {succ_match}, predecessor match: {pred_match} (depth={depth})")
+        if not pred_match:
+            details.append(f"    expected base: {exp_base}, got labels: {owner_labels}")
+
+    if succ_match and pred_match:
+        return 1.0
+    elif succ_match:
+        return 0.5
+    return 0
+
+
+def check_nsec_patterns(zone_name, parent_name, has_wildcard=False, verbose=False):
     """
     Query for random non-existent names and check if NSEC records
-    match UltraDNS patterns. Returns (matches, total, details).
+    match UltraDNS patterns. Works with both NXDOMAIN responses and
+    wildcard-synthesized responses. Returns (matches, total, details).
     """
     num_tests = 5
     matches = 0
@@ -173,74 +198,22 @@ def check_nxdomain_nsec(zone_name, parent_name, verbose=False):
         response = query_dns(test_fqdn, "A")
         rcode = response.rcode()
 
-        if rcode != dns.rcode.NXDOMAIN:
-            details.append(f"  {test_fqdn}: expected NXDOMAIN, got {dns.rcode.to_text(rcode)}")
-            continue
-
-        nsec_records = get_nsec_records(response)
-        if not nsec_records:
-            details.append(f"  {test_fqdn}: no NSEC records (might be NSEC3)")
-            continue
-
-        name_covering = None
-        wildcard_covering = None
-
-        for rrset in nsec_records:
-            for rdata in rrset:
-                next_name = rdata.next
-                next_labels = next_name.relativize(parent_name)
-                next_first_label = next_labels[0].decode().lower()
-
-                if next_first_label == expected_successor_label(test_label):
-                    name_covering = (rrset.name, next_name)
-                else:
-                    wildcard_covering = (rrset.name, next_name)
-
-        result = {}
-
-        if name_covering:
-            owner, nxt = name_covering
-            owner_rel = owner.relativize(parent_name)
-
-            exp_base = expected_predecessor_label(test_label)
-            owner_labels = [l.decode().lower() for l in owner_rel.labels]
-
-            pred_match = False
-            if len(owner_labels) >= 2:
-                base_label = owner_labels[-1]
-                tilde_labels = owner_labels[:-1]
-                if base_label == exp_base and all(l == "~" for l in tilde_labels):
-                    pred_match = True
-
-            succ_str = nxt.relativize(parent_name)[0].decode().lower()
-            succ_match = succ_str == expected_successor_label(test_label)
-
-            result["successor"] = succ_match
-            result["predecessor"] = pred_match
-
-            if verbose:
-                depth = len(owner_labels) - 1 if pred_match else "?"
-                details.append(f"  {test_label}: NSEC owner={owner} next={nxt}")
-                details.append(f"    successor match: {succ_match}, predecessor match: {pred_match} (depth={depth})")
-                if not pred_match:
-                    details.append(f"    expected base: {exp_base}, got labels: {owner_labels}")
-
-            if succ_match and pred_match:
-                matches += 1
-            elif succ_match:
-                matches += 0.5
+        if rcode == dns.rcode.NXDOMAIN:
+            nsec_records = get_nsec_records(response)
+            if not nsec_records:
+                details.append(f"  {test_fqdn}: no NSEC records (might be NSEC3)")
+                continue
+            score = match_nsec_pattern(test_label, parent_name, nsec_records, verbose, details)
+            matches += score
+        elif rcode == dns.rcode.NOERROR and has_wildcard:
+            nsec_records = get_nsec_records(response)
+            if not nsec_records:
+                details.append(f"  {test_fqdn}: wildcard match but no NSEC records")
+                continue
+            score = match_nsec_pattern(test_label, parent_name, nsec_records, verbose, details)
+            matches += score
         else:
-            if verbose:
-                details.append(f"  {test_label}: could not identify name-covering NSEC")
-
-        if wildcard_covering and verbose:
-            wc_owner, wc_next = wildcard_covering
-            wc_owner_rel = wc_owner.relativize(parent_name)
-            wc_next_rel = wc_next.relativize(parent_name)
-            wc_owner_str = wc_owner_rel[0].decode() if len(wc_owner_rel) > 0 else str(wc_owner_rel)
-            wc_next_str = wc_next_rel[0].decode() if len(wc_next_rel) > 0 else str(wc_next_rel)
-            wc_match = wc_owner_str == "!~" and wc_next_str == "-"
-            details.append(f"    wildcard NSEC: {wc_owner} -> {wc_next} (match: {wc_match})")
+            details.append(f"  {test_fqdn}: unexpected rcode {dns.rcode.to_text(rcode)}")
 
     return matches, num_tests, details
 
@@ -306,19 +279,26 @@ def detect(zone_str, verbose=False):
     apex_match, apex_msg = check_nodata_nsec(zone_name, verbose)
     print(f"  {apex_msg}")
 
-    print("\n[4] Finding NXDOMAIN-capable parent...")
+    print("\n[4] Finding query strategy...")
     parent, method = find_nxdomain_parent(zone_name)
-    if parent is None:
-        print(f"  Could not find suitable parent for NXDOMAIN queries ({method})")
+    has_wildcard = False
+    if method == "apex_wildcard":
+        has_wildcard = True
+        parent = zone_name
+        print(f"  Zone has apex wildcard — will test NSEC patterns from wildcard responses")
+    elif parent is None:
+        print(f"  Could not determine query strategy ({method})")
         if apex_match:
-            print("\nResult: LIKELY UltraDNS-style (apex NODATA matches, but could not test NXDOMAIN)")
+            print("\nResult: LIKELY UltraDNS-style (apex NODATA matches, but could not test NSEC)")
         else:
             print("\nResult: INCONCLUSIVE")
         return apex_match or False
-    print(f"  Using parent: {parent} ({method})")
+    else:
+        print(f"  Using parent: {parent} ({method})")
 
-    print(f"\n[5] Testing NXDOMAIN NSEC patterns ({parent})...")
-    matches, total, details = check_nxdomain_nsec(zone_name, parent, verbose)
+    print(f"\n[5] Testing NSEC patterns ({parent})...")
+    matches, total, details = check_nsec_patterns(
+        zone_name, parent, has_wildcard=has_wildcard, verbose=verbose)
     for d in details:
         print(d)
     print(f"  Score: {matches}/{total} queries matched UltraDNS pattern")

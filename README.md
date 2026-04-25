@@ -94,6 +94,24 @@ own alphabet minimum.
 names (leaf nodes). For names that have children in the zone (ENT, apex),
 a child-label approach is used instead to avoid covering existing children.
 
+## Scope of the Algorithm
+
+For NODATA responses (name exists, wrong type), the algorithm operates
+directly on the queried name.
+
+For non-existent names (NXDOMAIN and wildcard-synthesized responses),
+the predecessor and successor functions operate on the **first label
+below the closest encloser** (the "next closer name", per RFC 5155)
+of the queried name. The closest encloser
+is the deepest existing ancestor of the query name within the zone. For
+a direct child of the zone (e.g., `koala.ultratest.huque.com`), the
+closest encloser is the zone apex and the algorithm operates on the
+label `koala`. For a deeper name (e.g., `xxx.finance.corp.ultratest2
+.huque.com`), the closest encloser is `finance.corp.ultratest2.huque
+.com` and the algorithm operates on the label `xxx`. The remaining
+labels (the closest encloser suffix) are carried through unchanged in
+both the predecessor and successor names.
+
 ## Predecessor Function
 
 The predecessor function is more complex. For a queried name Q:
@@ -149,11 +167,12 @@ canonical order.
 
 ### Rule
 
-Given a query name Q within some parent domain:
+Given a query name Q, identify the closest encloser (see "Scope of the
+Algorithm" above) and extract the first label L below it. Then:
 
 1. Find the nearest existing domain name P within the zone that
-   precedes Q in DNS canonical order (at the same level within the
-   parent).
+   precedes L in DNS canonical order (at the same level below the
+   closest encloser).
 2. Compute the subtree height of P: the length of the longest
    descendant chain rooted at P within the zone.
    - Leaf node (no children): height = 1
@@ -184,6 +203,7 @@ theory, with names at various subtree depths:
 | `ab` | `aa` (leaf) | 1 | 1 | `\~.aa\~` |
 | `bb` | `aa` (leaf) | 1 | 1 | `\~.ba\~` |
 | `da` | `corp` (→finance→foo) | 3 | 3 | `\~.\~.\~.d\_\~` |
+| `foo.da` | `corp` (→finance→foo) | 3 | 3 | `\~.\~.\~.d\_\~` (next closer name is `da`) |
 | `ee` | `dd` (leaf) | 1 | 1 | `\~.ed\~` |
 | `ff` | `ent` (→kk) | 2 | 2 | `\~.\~.fe\~` |
 | `hh` | `gg` (leaf) | 1 | 1 | `\~.hg\~` |

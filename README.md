@@ -144,14 +144,16 @@ The number of `~` child labels prepended to the predecessor base label
 is not fixed — it varies depending on the zone content. The base label
 computation is always the same (decrement last character, append `~`),
 but the number of `~` child labels prepended equals the **subtree height
-of the nearest preceding existing zone name** in DNS canonical order.
+of the nearest preceding existing domain name within the zone** in DNS
+canonical order.
 
 ### Rule
 
 Given a query name Q within some parent domain:
 
-1. Find the nearest existing zone name P that precedes Q in DNS
-   canonical order (at the same level within the parent).
+1. Find the nearest existing domain name P within the zone that
+   precedes Q in DNS canonical order (at the same level within the
+   parent).
 2. Compute the subtree height of P: the length of the longest
    descendant chain rooted at P within the zone.
    - Leaf node (no children): height = 1

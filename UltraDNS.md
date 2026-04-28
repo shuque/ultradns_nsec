@@ -5,9 +5,8 @@
 UltraDNS, a commercial DNS provider, uses a variant of Minimally
 Covered NSEC records in their DNSSEC implementation described in
 RFC 4470 ( https://datatracker.ietf.org/doc/html/rfc4470 ). This
-excercise tries to reverse engineer the UltraDNS epsilon function
-used to compute the NSEC precedecessor and successor names they
-use.
+exercise tries to reverse engineer the UltraDNS epsilon function
+used to compute the NSEC precedecessor and successor names.
 
 ## Character Alphabet
 
@@ -60,10 +59,11 @@ lowercase a-z. The algorithm appears to operate in the lowercased space.
 
 **Special cases for names with children in the zone:**
 
-For the zone apex and empty non-terminals, simply appending `!` to the
-label would not work. In DNS canonical ordering, all children of a name
-sort between the name and its next sibling. So if the successor were
-`ent!`, the NSEC range `[ent, ent!)` would also cover `foo.ent` (a
+For any name that has children in the zone — whether it is the zone apex,
+an empty non-terminal, or a regular name with data — simply appending `!`
+to the label would not work. In DNS canonical ordering, all children of a
+name sort between the name and its next sibling. So if the successor were
+`corp!`, the NSEC range `[corp, corp!)` would also cover `finance.corp` (a
 legitimate child that exists in the zone), effectively denying its
 existence. For the zone apex there is an additional reason: appending `!`
 to the apex label would produce `ultratest!.huque.com.`, which is a name
@@ -72,27 +72,31 @@ chain names within a single zone, so the next name must remain within the
 zone's authority. Even if a validator doesn't enforce a same-zone check,
 producing an out-of-zone next name would be semantically incorrect.
 Beyond this, `ultratest!` would also sort after all child names in the zone,
-creating the same coverage problem as the ENT case.
+creating the same coverage problem.
 
 Instead, the successor must be a child of the name, sorting after the name
 but before any real children:
 
 - Zone apex NODATA: next name = `!.ultratest.huque.com.` (child label `!`,
   the alphabet minimum, which sorts before any real child)
+- Name with children (corp): next name = `\000.corp.ultratest2.huque.com.`
+  (a child label containing a single 0x00 byte). `corp` has data (TXT) but
+  also has children (`finance.corp`), so the child-label approach is needed.
 - Empty non-terminal (ent): next name = `\000.ent.ultratest.huque.com.`
-  (a child label containing a single 0x00 byte)
+  (same `\000` child label as any other non-apex name with children)
 
-The ENT case uses `\000` (the absolute DNS minimum byte) rather than `!`
-(the algorithm's alphabet minimum). Using `!.ent` would have been equally
-correct and consistent with the apex behavior. The use of `\000` — a
-character outside the algorithm's deduced alphabet — suggests the ENT and
-apex cases are likely handled by different code paths, with the ENT path
-falling back to the generic DNS minimum byte rather than the algorithm's
-own alphabet minimum.
+The zone apex uses `!` (the algorithm's alphabet minimum) as the child
+label, while all other names with children use `\000` (the absolute DNS
+minimum byte). Using `!.corp` or `!.ent` would have been equally correct.
+The difference suggests the apex is handled by a distinct code path that
+uses the algorithm's own alphabet minimum, while the general case for
+names with children falls back to the generic DNS minimum byte.
 
-**Conclusion: The successor function is always "append `!`"** for regular
-names (leaf nodes). For names that have children in the zone (ENT, apex),
-a child-label approach is used instead to avoid covering existing children.
+**Conclusion: The successor function is always "append `!`"** for leaf
+names (no children in the zone). For any name that has children in the
+zone — whether the zone apex, an empty non-terminal, or a name with both
+data and children — a child-label approach is used instead to avoid
+covering existing children (`!` for the apex, `\000` for all others).
 
 ## Scope of the Algorithm
 
@@ -369,10 +373,13 @@ unless otherwise noted.
 | yak AAAA | yak | yak! | A RRSIG NSEC |
 | \_ A | \_ | \_! | TXT RRSIG NSEC |
 | ultratest.huque.com AAAA | ultratest.huque.com | !.ultratest.huque.com | A NS SOA RRSIG NSEC DNSKEY CAA |
+| corp.ultratest2 TLSA | corp.ultratest2 | \\000.corp.ultratest2 | TXT RRSIG NSEC |
 | ent A | ent | \\000.ent | RRSIG NSEC |
 
 Note: `ent` is an empty non-terminal (has child `foo.ent` but no records
-of its own). Its successor uses a `\000` child label rather than appending `!`.
+of its own). `corp.ultratest2` has data (TXT) but also has children
+(`finance.corp`). Both use a `\000` child label rather than appending `!`,
+because they have children in the zone.
 
 ### NXDOMAIN Responses — Name Coverage NSEC
 

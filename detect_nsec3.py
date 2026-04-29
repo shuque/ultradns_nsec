@@ -14,6 +14,7 @@ DNS-over-HTTPS to Cloudflare (or a custom server with --doh-server).
 """
 
 import sys
+import base64
 import string
 import random
 import argparse
@@ -52,13 +53,26 @@ def random_label(length=10):
                    for _ in range(length))
 
 
+_B32HEX_TO_B32 = str.maketrans(
+    '0123456789ABCDEFGHIJKLMNOPQRSTUV',
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567',
+)
+
+_B32_TO_B32HEX = str.maketrans(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567',
+    '0123456789ABCDEFGHIJKLMNOPQRSTUV',
+)
+
+
 def b32hex_to_int(s):
     """Decode a base32hex string to an integer."""
     s = s.upper()
     padding = (8 - len(s) % 8) % 8
     data = s + '=' * padding
-    import base64
-    raw = base64.b32hexdecode(data)
+    if hasattr(base64, 'b32hexdecode'):
+        raw = base64.b32hexdecode(data)
+    else:
+        raw = base64.b32decode(data.translate(_B32HEX_TO_B32))
     return int.from_bytes(raw, 'big')
 
 
@@ -106,8 +120,9 @@ def get_nsec3param(zone_name, doh_url):
 
 def bytes_to_b32hex(data):
     """Encode raw bytes as base32hex (no padding), uppercase."""
-    import base64
-    return base64.b32hexencode(data).decode().rstrip('=')
+    if hasattr(base64, 'b32hexencode'):
+        return base64.b32hexencode(data).decode().rstrip('=')
+    return base64.b32encode(data).decode().translate(_B32_TO_B32HEX).rstrip('=')
 
 
 def get_nsec3_records(response):
